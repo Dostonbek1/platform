@@ -61,15 +61,22 @@ fi
 
 # Build manifests and apply with image substitution (if IMAGE_* vars set)
 # Use --validate=false for remote Podman API server compatibility
+# When IMAGE_* overrides are set, also switch imagePullPolicy to IfNotPresent
+# since the images are pre-loaded into kind via `kind load docker-image`.
 kubectl kustomize ../components/manifests/overlays/kind/ | \
   sed "s|quay.io/ambient_code/vteam_backend:latest|${IMAGE_BACKEND:-quay.io/ambient_code/vteam_backend:latest}|g" | \
   sed "s|quay.io/ambient_code/vteam_frontend:latest|${IMAGE_FRONTEND:-quay.io/ambient_code/vteam_frontend:latest}|g" | \
   sed "s|quay.io/ambient_code/vteam_operator:latest|${IMAGE_OPERATOR:-quay.io/ambient_code/vteam_operator:latest}|g" | \
   sed "s|quay.io/ambient_code/vteam_claude_runner:latest|${IMAGE_RUNNER:-quay.io/ambient_code/vteam_claude_runner:latest}|g" | \
   sed "s|quay.io/ambient_code/vteam_state_sync:latest|${IMAGE_STATE_SYNC:-quay.io/ambient_code/vteam_state_sync:latest}|g" | \
+  if [ -n "${IMAGE_BACKEND:-}${IMAGE_FRONTEND:-}${IMAGE_OPERATOR:-}${IMAGE_RUNNER:-}" ]; then
+    sed "s|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|g"
+  else
+    cat
+  fi | \
   kubectl apply --validate=false -f -
 
-# Inject ANTHROPIC_API_KEY if set (for agent testing)
+# Inject runner secrets for agent testing
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo ""
   echo "Injecting ANTHROPIC_API_KEY into runner secrets..."
@@ -82,9 +89,11 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "   ✓ ANTHROPIC_API_KEY injected (agent testing enabled)"
 else
   echo ""
-  echo "⚠️  No ANTHROPIC_API_KEY found - agent testing will be limited"
-  echo "   To enable full agent testing, create e2e/.env with:"
-  echo "   ANTHROPIC_API_KEY=your-api-key-here"
+  echo "No ANTHROPIC_API_KEY — using mock SDK client (pre-recorded fixtures)"
+  kubectl create secret generic ambient-runner-secrets -n ambient-code \
+    --from-literal=ANTHROPIC_API_KEY=mock-replay-key \
+    --dry-run=client -o yaml | kubectl apply --validate=false -f -
+  echo "   ✓ Mock SDK configured (ANTHROPIC_API_KEY=mock-replay-key)"
 fi
 
 echo ""
@@ -135,16 +144,16 @@ fi
 
 echo "TEST_TOKEN=$TOKEN" > .env.test
 echo "CYPRESS_BASE_URL=$BASE_URL" >> .env.test
-# Save ANTHROPIC_API_KEY to .env.test if set (for agent testing in Cypress)
+# Save agent config to .env.test
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> .env.test
   echo "   ✓ Token saved to .env.test"
   echo "   ✓ Base URL: $BASE_URL"
-  echo "   ✓ API Key saved (agent testing enabled)"
+  echo "   ✓ API Key saved (agent testing with real LLM)"
 else
   echo "   ✓ Token saved to .env.test"
   echo "   ✓ Base URL: $BASE_URL"
-  echo "   ⚠️  No API Key (agent testing will be skipped)"
+  echo "   ✓ Replay mode (agent testing without API key)"
 fi
 
 echo ""
